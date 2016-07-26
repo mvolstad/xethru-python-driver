@@ -43,7 +43,7 @@ class Xethru:
 		if reconfigure_sensor:
 			if not self.__reset_module():
 				print "Reset module failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 				
 			if app_id == XTS_ID_APP_PRESENCE:
@@ -66,32 +66,32 @@ class Xethru:
 				
 			if not self.__load_application(app_id):
 				print "Load application id failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 				
 			if not self.__set_led_control(led_mode):
 				print "Set LED control failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 				
 			if not self.__set_detection_zone(detection_zone_min, detection_zone_max):
 				print "Set detection zone failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 
 			if not self.__set_sensitivity(sensitivity):
 				print "Set sensitivity failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 
 			if not self.__enable_baseband_output(output_format):
 				print "Enabling output format failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 				
 			if not self.__set_mode(XTS_SM_RUN):
 				print "Set mode failed"
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 				return
 				
 		self.initialized = True
@@ -99,7 +99,7 @@ class Xethru:
 	def __del__(self):
 		if self.initialized:
 			try:			
-				self.serial_connection.close()
+				self.__disconnect_from_port()
 			except serial.SerialException:
 				pass
 	
@@ -189,19 +189,21 @@ class Xethru:
 		
 		baseband_status['Type'] = XTS_ID_BASEBAND_IQ
 		baseband_status['Counter'] = self.__get_integer(data[0:4])
-		baseband_status['SamplingFrequency'] = self.__get_float(data[4:8])
-		baseband_status['CarrierFrequency'] = self.__get_float(data[8:12])
-		baseband_status['RangeOffset'] = self.__get_float(data[12:16])
-		baseband_status['NumOfBins'] = self.__get_integer(data[16:20])
+		baseband_status['NumOfBins'] = self.__get_integer(data[4:8])
+		baseband_status['SamplingFrequency'] = self.__get_float(data[8:12])
+		baseband_status['CarrierFrequency'] = self.__get_float(data[12:16])
+		baseband_status['RangeOffset'] = self.__get_float(data[16:20])
 
 		SigI = []
-		SigO = []
+		SigQ = []
 		for i in range(baseband_status['NumOfBins']):
-			SigI[i] = self.__get_float(data[(20 + i*8):(24 + i*8)])
-			SigO[i] = self.__get_float(data[(24 + i*8):(28 + i*8)])
+			SigI.append(self.__get_float(data[(20 + i*8):(24 + i*8)]))
+		
+		for i in range(baseband_status['NumOfBins']):
+			SigQ.append(self.__get_float(data[(20 + 4*baseband_status['NumOfBins'] + i*4):(24 + 4*baseband_status['NumOfBins'] + i*4)]))
 		
 		baseband_status['SigI'] = SigI
-		baseband_status['SigO'] = SigO
+		baseband_status['SigQ'] = SigQ
 
 		return baseband_status
 
@@ -219,8 +221,10 @@ class Xethru:
 		Power = []
 		Phase = []
 		for i in range(baseband_status['NumOfBins']):
-			Power[i] = self.__get_float(data[(20 + i*8):(24 + i*8)])
-			Phase[i] = self.__get_float(data[(24 + i*8):(28 + i*8)])
+			Power.append(self.__get_float(data[(20 + i*4):(24 + i*4)]))
+		
+		for i in range(baseband_status['NumOfBins']):
+			Phase.append(self.__get_float(data[(20 + 4*baseband_status['NumOfBins'] + i*4):(24 + 4*baseband_status['NumOfBins'] + i*4)]))
 		
 		baseband_status['Power'] = Power
 		baseband_status['Phase'] = Phase
@@ -253,14 +257,19 @@ class Xethru:
 
 		# Wait until the module is ready
 		while True:
-			resp = self.__receive_response()
-			if len(resp) > 0:
-				if resp[0] == XTS_SPR_SYSTEM:
-					if resp[1] == XTS_SPRS_READY:
-						return True
-			else:
-				# Timed out while waiting for response
-				break
+			try:
+				resp = self.__receive_response()
+				if len(resp) > 0:
+					if resp[0] == XTS_SPR_SYSTEM:
+						if resp[1] == XTS_SPRS_READY:
+							return True
+				else:
+					# Timed out while waiting for response
+					break
+			except:
+				self.__disconnect_from_port()
+				if not self.__connect_to_port():
+					return False
 
 		# Attempting to ping device
 		retry_count = 100
@@ -387,9 +396,10 @@ class Xethru:
 		
 	def __enable_baseband_output(self, output_format):
 		# Send command
-		data = [XTS_SPC_APPCOMMAND, XTS_SPCA_SET]
+		data = [XTS_SPC_DIR_COMMAND, XTS_SDC_APP_SETINT]
 		data = self.__append_integer(data, XTS_SACR_OUTPUTBASEBAND)
-		data.append(output_format)
+		data = self.__append_integer(data, 1)
+		data = self.__append_integer(data, output_format)
 		self.__transmit_command(data)
 
 		# Check response
